@@ -34,15 +34,15 @@ _LOGIN_COOKIE_NAMES = {"sessionid", "LOGIN_STATUS"}
 # --------------------------------------------------------------------------- #
 
 DEFAULT_OUTPUT_DIR = "downloads"
-DEFAULT_SCROLL_PAUSE = 2          # seconds between scroll steps
-DEFAULT_SCROLL_PAUSE_JITTER = 1.5 # max additional random seconds added to each scroll pause
+DEFAULT_SCROLL_PAUSE = 3.0        # seconds between scroll steps
+DEFAULT_SCROLL_PAUSE_JITTER = 2.0 # max additional random seconds added to each scroll pause
 DEFAULT_MAX_SCROLLS = 200         # upper bound to avoid infinite loops (raised for large accounts)
 DEFAULT_DOWNLOAD_DELAY_MIN = 1.0  # minimum random pause between downloads (seconds)
 DEFAULT_DOWNLOAD_DELAY_MAX = 3.0  # maximum random pause between downloads (seconds)
 # Consecutive fruitless scrolls needed to stop when API says no more content
 EARLY_STOP_NO_MORE = 3
 # Consecutive fruitless scrolls needed to stop regardless of has_more (safety net)
-SAFETY_STOP_CONSECUTIVE = 5
+SAFETY_STOP_CONSECUTIVE = 10
 class VideoItem(TypedDict):
     """A single video item returned by the scraper."""
     aweme_id: str
@@ -356,23 +356,38 @@ class DouyinScraper:
 
         Uses incremental scrolling (one viewport height at a time) so that
         Douyin's IntersectionObserver-based load-more sentinel actually passes
-        through the viewport and triggers the next API call.  When stuck,
-        an extra attempt scrolls the last rendered video item into view.
+        through the viewport and triggers the next API call.
+
+        When stuck, progressive recovery strategies are applied:
+        - Level 1 (any consecutive miss): scroll to the absolute page bottom so
+          the lazy-load sentinel is guaranteed to enter the viewport.
+        - Level 2 (3+ consecutive misses): scroll back up two viewport heights
+          and then return to the bottom, forcing the IntersectionObserver to
+          fire again as the sentinel re-enters the viewport.
+
+        A random jitter is added to every pause to simulate human scrolling
+        speed and reduce the chance of anti-bot detection.
         """
         prev_count = 0
         for step in range(self.max_scrolls):
-            # Scroll one viewport height to let the lazy-load sentinel enter view
+            # Primary scroll: advance one viewport height
             page.evaluate("window.scrollBy(0, window.innerHeight)")
 
-            # When no new videos appeared on recent scrolls, additionally try
-            # scrolling the last video card into view to nudge the sentinel
+            # Level-1 recovery: scroll to absolute page bottom so the sentinel
+            # is guaranteed to enter the viewport
             if self._consecutive_no_new > 0:
                 page.evaluate(
-                    "var sel = 'li[data-e2e=\"user-post-item\"],"
-                    " div[data-e2e=\"user-post-item\"],"
-                    " [class*=\"video-card\"]';"
-                    " var items = document.querySelectorAll(sel);"
-                    " if (items.length) items[items.length - 1].scrollIntoView();"
+                    "window.scrollTo(0, document.body.scrollHeight"
+                    " || document.documentElement.scrollHeight);"
+                )
+
+            # Level-2 recovery: scroll up and back down to re-trigger the
+            # IntersectionObserver on the load-more sentinel
+            if self._consecutive_no_new >= 3:
+                page.evaluate("window.scrollBy(0, -window.innerHeight * 2);")
+                page.evaluate(
+                    "window.scrollTo(0, document.body.scrollHeight"
+                    " || document.documentElement.scrollHeight);"
                 )
 
             time.sleep(self.scroll_pause + random.uniform(0, self.scroll_pause_jitter))

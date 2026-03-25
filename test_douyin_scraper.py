@@ -348,9 +348,11 @@ class TestScrollToBottom:
         mock_page = MagicMock()
         scraper._scroll_to_bottom(mock_page)
 
-        # Scroll 1 emits 1 evaluate (primary scrollBy; no fallback since
-        # consecutive_no_new is still 0 at call time).
-        # Scrolls 2..EARLY_STOP_NO_MORE each emit 2 evaluates (scrollBy + scrollIntoView).
+        # Scroll 1 emits 1 evaluate (primary scrollBy; consecutive_no_new=0 so
+        # no recovery).
+        # Scrolls 2..EARLY_STOP_NO_MORE each emit 2 evaluates (scrollBy +
+        # level-1 scrollTo-bottom; consecutive_no_new is 1 or 2, below the 3
+        # threshold for level-2 recovery).
         expected = 1 + 2 * (ds.EARLY_STOP_NO_MORE - 1)
         assert mock_page.evaluate.call_count == expected
 
@@ -368,9 +370,50 @@ class TestScrollToBottom:
         mock_page = MagicMock()
         scraper._scroll_to_bottom(mock_page)
 
-        # Scroll 1: 1 evaluate; scrolls 2..SAFETY_STOP_CONSECUTIVE: 2 evaluates each
-        expected = 1 + 2 * (ds.SAFETY_STOP_CONSECUTIVE - 1)
+        # Evaluate call count depends on which recovery level is active:
+        #   consecutive_no_new=0 (scroll 1):  1 eval  (primary scrollBy only)
+        #   consecutive_no_new=1,2 (scrolls 2-3): 2 evals each (+ level-1 scrollTo-bottom)
+        #   consecutive_no_new>=3 (scrolls 4..SAFETY_STOP_CONSECUTIVE):
+        #       4 evals each (+ level-1 scrollTo, + level-2 scrollBy-up + scrollTo)
+        n = ds.SAFETY_STOP_CONSECUTIVE
+        expected = 1 + 2 * 2 + 4 * (n - 3)
         assert mock_page.evaluate.call_count == expected
+
+    def test_level1_recovery_scrolls_to_page_bottom(self):
+        """Level-1 recovery (consecutive_no_new >= 1) should call scrollTo the page bottom."""
+        scraper = ds.DouyinScraper(scroll_pause=0, scroll_pause_jitter=0, max_scrolls=2)
+        scraper._video_items = []
+        scraper._consecutive_no_new = 0
+        scraper._has_more = False
+
+        mock_page = MagicMock()
+        scraper._scroll_to_bottom(mock_page)
+
+        # Scroll 2 (step=1) triggers level-1 recovery; check that the exact JS
+        # for scrolling to the document bottom was issued
+        all_js = [call[0][0] for call in mock_page.evaluate.call_args_list]
+        bottom_scroll_calls = [
+            js for js in all_js if "window.scrollTo(0, document.body.scrollHeight" in js
+        ]
+        assert len(bottom_scroll_calls) >= 1, "Expected at least one scrollTo(page bottom) call"
+
+    def test_level2_recovery_scrolls_up_then_down(self):
+        """Level-2 recovery (consecutive_no_new >= 3) should scroll up then back to bottom."""
+        # Set consecutive_no_new to 3 upfront so level-2 fires on the very first iteration
+        scraper = ds.DouyinScraper(scroll_pause=0, scroll_pause_jitter=0, max_scrolls=1)
+        scraper._video_items = []
+        scraper._consecutive_no_new = 3  # already at level-2 threshold
+        scraper._has_more = False
+
+        mock_page = MagicMock()
+        scraper._scroll_to_bottom(mock_page)
+
+        all_js = [call[0][0] for call in mock_page.evaluate.call_args_list]
+        # Level-2: a scrollBy with a *negative* offset (scroll up by 2 viewport heights)
+        up_scroll_calls = [
+            js for js in all_js if "scrollBy(0, -window.innerHeight * 2)" in js
+        ]
+        assert len(up_scroll_calls) >= 1, "Expected at least one upward scrollBy call"
 
     def test_uses_scroll_by_js(self):
         """Scroll should use scrollBy(0, innerHeight) for incremental scrolling."""
