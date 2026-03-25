@@ -20,8 +20,12 @@ from tqdm import tqdm
 # Douyin login page URL used during cookie capture
 DOUYIN_LOGIN_URL = "https://www.douyin.com/"
 
-# Cookie names that indicate a successful Douyin login
-_LOGIN_COOKIE_NAMES = {"odin_tt", "sessionid", "LOGIN_STATUS", "passport_csrf_token"}
+# Cookie names that indicate a successful Douyin login.
+# NOTE: passport_csrf_token and odin_tt are set for *all* visitors (including
+# unauthenticated ones) as soon as the page loads, so they must NOT be used as
+# login indicators.  Only sessionid and LOGIN_STATUS (value "1") reliably
+# confirm an authenticated session.
+_LOGIN_COOKIE_NAMES = {"sessionid", "LOGIN_STATUS"}
 
 
 # --------------------------------------------------------------------------- #
@@ -69,6 +73,26 @@ def _cookies_to_dict(cookies: list) -> dict:
     return {c["name"]: c["value"] for c in cookies}
 
 
+def _cookies_indicate_login(cookies: list) -> bool:
+    """Return ``True`` when *cookies* contain evidence of a successful login.
+
+    * ``sessionid`` – must be present and non-empty.
+    * ``LOGIN_STATUS`` – must be present with value ``"1"``.
+
+    Both ``odin_tt`` and ``passport_csrf_token`` are intentionally excluded:
+    Douyin sets them for every visitor (authenticated or not) on the first
+    page load, so they cannot be used as reliable login indicators.
+    """
+    for c in cookies:
+        name = c.get("name", "")
+        value = c.get("value", "")
+        if name == "sessionid" and value:
+            return True
+        if name == "LOGIN_STATUS" and value == "1":
+            return True
+    return False
+
+
 # --------------------------------------------------------------------------- #
 # Auto cookie retrieval
 # --------------------------------------------------------------------------- #
@@ -113,7 +137,7 @@ def fetch_cookies(
         logged_in = False
         while time.time() < deadline:
             current_cookies = context.cookies()
-            if any(c["name"] in _LOGIN_COOKIE_NAMES for c in current_cookies):
+            if _cookies_indicate_login(current_cookies):
                 logged_in = True
                 print("[INFO] Login detected.")
                 break

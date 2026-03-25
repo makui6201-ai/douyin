@@ -383,6 +383,38 @@ class TestGetCookiesDict:
 
 
 # --------------------------------------------------------------------------- #
+# _cookies_indicate_login
+# --------------------------------------------------------------------------- #
+
+class TestCookiesIndicateLogin:
+    def _c(self, name: str, value: str) -> dict:
+        return {"name": name, "value": value}
+
+    def test_sessionid_triggers_login(self):
+        assert ds._cookies_indicate_login([self._c("sessionid", "abc123")]) is True
+
+    def test_login_status_one_triggers_login(self):
+        assert ds._cookies_indicate_login([self._c("LOGIN_STATUS", "1")]) is True
+
+    def test_login_status_zero_does_not_trigger(self):
+        assert ds._cookies_indicate_login([self._c("LOGIN_STATUS", "0")]) is False
+
+    def test_empty_sessionid_does_not_trigger(self):
+        assert ds._cookies_indicate_login([self._c("sessionid", "")]) is False
+
+    def test_passport_csrf_token_does_not_trigger(self):
+        """passport_csrf_token is set for all visitors and must not be a login signal."""
+        assert ds._cookies_indicate_login([self._c("passport_csrf_token", "tok")]) is False
+
+    def test_odin_tt_does_not_trigger(self):
+        """odin_tt is set for all visitors and must not be a login signal."""
+        assert ds._cookies_indicate_login([self._c("odin_tt", "tok")]) is False
+
+    def test_empty_list_returns_false(self):
+        assert ds._cookies_indicate_login([]) is False
+
+
+# --------------------------------------------------------------------------- #
 # fetch_cookies (unit – no real browser)
 # --------------------------------------------------------------------------- #
 
@@ -393,7 +425,7 @@ class TestFetchCookies:
     def test_saves_cookies_to_file_on_login_detection(self, tmp_path):
         """fetch_cookies should write cookies.json and return the cookie list."""
         save_path = str(tmp_path / "out_cookies.json")
-        fake_cookies = [self._make_cookie("odin_tt", "secret")]
+        fake_cookies = [self._make_cookie("sessionid", "secret")]
 
         mock_context = MagicMock()
         # First call to context.cookies() detects login (odin_tt present)
