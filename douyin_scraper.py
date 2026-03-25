@@ -5,6 +5,7 @@ Scrapes a Douyin user's video list and downloads the videos locally.
 
 import json
 import os
+import random
 import re
 import sys
 import time
@@ -34,7 +35,10 @@ _LOGIN_COOKIE_NAMES = {"sessionid", "LOGIN_STATUS"}
 
 DEFAULT_OUTPUT_DIR = "downloads"
 DEFAULT_SCROLL_PAUSE = 2          # seconds between scroll steps
-DEFAULT_MAX_SCROLLS = 50          # upper bound to avoid infinite loops
+DEFAULT_SCROLL_PAUSE_JITTER = 1.5 # max additional random seconds added to each scroll pause
+DEFAULT_MAX_SCROLLS = 200         # upper bound to avoid infinite loops (raised for large accounts)
+DEFAULT_DOWNLOAD_DELAY_MIN = 1.0  # minimum random pause between downloads (seconds)
+DEFAULT_DOWNLOAD_DELAY_MAX = 3.0  # maximum random pause between downloads (seconds)
 # Consecutive fruitless scrolls needed to stop when API says no more content
 EARLY_STOP_NO_MORE = 3
 # Consecutive fruitless scrolls needed to stop regardless of has_more (safety net)
@@ -284,14 +288,20 @@ class DouyinScraper:
         output_dir: str = DEFAULT_OUTPUT_DIR,
         headless: bool = True,
         scroll_pause: float = DEFAULT_SCROLL_PAUSE,
+        scroll_pause_jitter: float = DEFAULT_SCROLL_PAUSE_JITTER,
         max_scrolls: int = DEFAULT_MAX_SCROLLS,
         cookies_file: Optional[str] = None,
+        download_delay_min: float = DEFAULT_DOWNLOAD_DELAY_MIN,
+        download_delay_max: float = DEFAULT_DOWNLOAD_DELAY_MAX,
     ):
         self.output_dir = Path(output_dir)
         self.headless = headless
         self.scroll_pause = scroll_pause
+        self.scroll_pause_jitter = scroll_pause_jitter
         self.max_scrolls = max_scrolls
         self.cookies_file = cookies_file
+        self.download_delay_min = download_delay_min
+        self.download_delay_max = download_delay_max
         self._video_items: list[VideoItem] = []
 
     # ------------------------------------------------------------------ #
@@ -365,7 +375,7 @@ class DouyinScraper:
                     " if (items.length) items[items.length - 1].scrollIntoView();"
                 )
 
-            time.sleep(self.scroll_pause)
+            time.sleep(self.scroll_pause + random.uniform(0, self.scroll_pause_jitter))
             cur_count = len(self._video_items)
             print(
                 f"  [SCROLL {step + 1}/{self.max_scrolls}] "
@@ -451,6 +461,9 @@ class DouyinScraper:
 
             print(f"[{idx}/{total}] Downloading: {filename}")
             download_video(item["url"], dest, cookies=cookies)
+            if idx < total:
+                delay = random.uniform(self.download_delay_min, self.download_delay_max)
+                time.sleep(delay)
 
     def run(self, user_url: str) -> None:
         """Convenience method: fetch video list then download everything."""
@@ -498,10 +511,28 @@ def main() -> None:
         help="Seconds to pause between scroll steps",
     )
     parser.add_argument(
+        "--scroll-jitter",
+        type=float,
+        default=DEFAULT_SCROLL_PAUSE_JITTER,
+        help="Max additional random seconds added to each scroll pause (prevents rate limiting)",
+    )
+    parser.add_argument(
         "--max-scrolls",
         type=int,
         default=DEFAULT_MAX_SCROLLS,
         help="Maximum number of scroll steps",
+    )
+    parser.add_argument(
+        "--download-delay-min",
+        type=float,
+        default=DEFAULT_DOWNLOAD_DELAY_MIN,
+        help="Minimum random delay in seconds between video downloads",
+    )
+    parser.add_argument(
+        "--download-delay-max",
+        type=float,
+        default=DEFAULT_DOWNLOAD_DELAY_MAX,
+        help="Maximum random delay in seconds between video downloads",
     )
     parser.add_argument(
         "--cookies",
@@ -550,8 +581,11 @@ def main() -> None:
         output_dir=args.output_dir,
         headless=not args.no_headless,
         scroll_pause=args.scroll_pause,
+        scroll_pause_jitter=args.scroll_jitter,
         max_scrolls=args.max_scrolls,
         cookies_file=args.cookies,
+        download_delay_min=args.download_delay_min,
+        download_delay_max=args.download_delay_max,
     )
 
     if args.list_only:
