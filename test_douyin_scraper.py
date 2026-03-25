@@ -300,8 +300,11 @@ class TestScrollToBottom:
         mock_page = MagicMock()
         scraper._scroll_to_bottom(mock_page)
 
-        # Should have stopped after EARLY_STOP_NO_MORE (3) fruitless scrolls
-        assert mock_page.evaluate.call_count == ds.EARLY_STOP_NO_MORE
+        # Scroll 1 emits 1 evaluate (primary scrollBy; no fallback since
+        # consecutive_no_new is still 0 at call time).
+        # Scrolls 2..EARLY_STOP_NO_MORE each emit 2 evaluates (scrollBy + scrollIntoView).
+        expected = 1 + 2 * (ds.EARLY_STOP_NO_MORE - 1)
+        assert mock_page.evaluate.call_count == expected
 
     def test_continues_when_has_more_true(self):
         """When has_more is True, scroll should keep going past EARLY_STOP_NO_MORE
@@ -317,11 +320,12 @@ class TestScrollToBottom:
         mock_page = MagicMock()
         scraper._scroll_to_bottom(mock_page)
 
-        # Should have run until the safety net (SAFETY_STOP_CONSECUTIVE = 5)
-        assert mock_page.evaluate.call_count == ds.SAFETY_STOP_CONSECUTIVE
+        # Scroll 1: 1 evaluate; scrolls 2..SAFETY_STOP_CONSECUTIVE: 2 evaluates each
+        expected = 1 + 2 * (ds.SAFETY_STOP_CONSECUTIVE - 1)
+        assert mock_page.evaluate.call_count == expected
 
-    def test_uses_scroll_to_bottom_js(self):
-        """Scroll should use scrollTo(0, scrollHeight) to reach the page bottom."""
+    def test_uses_scroll_by_js(self):
+        """Scroll should use scrollBy(0, innerHeight) for incremental scrolling."""
         scraper = ds.DouyinScraper(scroll_pause=0, max_scrolls=1)
         scraper._video_items = []
         scraper._consecutive_no_new = 0
@@ -330,9 +334,10 @@ class TestScrollToBottom:
         mock_page = MagicMock()
         scraper._scroll_to_bottom(mock_page)
 
-        call_js = mock_page.evaluate.call_args[0][0]
-        assert "scrollTo" in call_js
-        assert "scrollHeight" in call_js
+        # First (and only) call is always the primary scrollBy call
+        first_call_js = mock_page.evaluate.call_args_list[0][0][0]
+        assert "scrollBy" in first_call_js
+        assert "innerHeight" in first_call_js
 
 
 # --------------------------------------------------------------------------- #

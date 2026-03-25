@@ -319,10 +319,28 @@ class DouyinScraper:
         """
         Scroll down the page repeatedly until no new content loads or
         *max_scrolls* is reached.
+
+        Uses incremental scrolling (one viewport height at a time) so that
+        Douyin's IntersectionObserver-based load-more sentinel actually passes
+        through the viewport and triggers the next API call.  When stuck,
+        an extra attempt scrolls the last rendered video item into view.
         """
         prev_count = 0
         for step in range(self.max_scrolls):
-            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            # Scroll one viewport height to let the lazy-load sentinel enter view
+            page.evaluate("window.scrollBy(0, window.innerHeight)")
+
+            # When no new videos appeared on recent scrolls, additionally try
+            # scrolling the last video card into view to nudge the sentinel
+            if self._consecutive_no_new > 0:
+                page.evaluate(
+                    "var sel = 'li[data-e2e=\"user-post-item\"],"
+                    " div[data-e2e=\"user-post-item\"],"
+                    " [class*=\"video-card\"]';"
+                    " var items = document.querySelectorAll(sel);"
+                    " if (items.length) items[items.length - 1].scrollIntoView();"
+                )
+
             time.sleep(self.scroll_pause)
             cur_count = len(self._video_items)
             print(
