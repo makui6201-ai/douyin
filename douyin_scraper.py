@@ -31,6 +31,10 @@ _LOGIN_COOKIE_NAMES = {"odin_tt", "sessionid", "LOGIN_STATUS", "passport_csrf_to
 DEFAULT_OUTPUT_DIR = "downloads"
 DEFAULT_SCROLL_PAUSE = 2          # seconds between scroll steps
 DEFAULT_MAX_SCROLLS = 50          # upper bound to avoid infinite loops
+# Consecutive fruitless scrolls needed to stop when API says no more content
+EARLY_STOP_NO_MORE = 3
+# Consecutive fruitless scrolls needed to stop regardless of has_more (safety net)
+SAFETY_STOP_CONSECUTIVE = 5
 class VideoItem(TypedDict):
     """A single video item returned by the scraper."""
     aweme_id: str
@@ -283,6 +287,10 @@ class DouyinScraper:
             if new:
                 print(f"  [API] Captured {len(new)} new video(s) from: {url.split('?')[0]}")
                 self._video_items.extend(new)
+            # Track pagination status so the scroll loop knows when to stop
+            has_more = body.get("has_more")
+            if has_more is not None:
+                self._has_more = bool(has_more)
         except (json.JSONDecodeError, KeyError, ValueError) as exc:
             print(f"  [WARN] Could not parse API response from {url.split('?')[0]}: {exc}")
 
@@ -314,18 +322,22 @@ class DouyinScraper:
         """
         prev_count = 0
         for step in range(self.max_scrolls):
-            page.evaluate("window.scrollBy(0, window.innerHeight * 2)")
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
             time.sleep(self.scroll_pause)
             cur_count = len(self._video_items)
             print(
                 f"  [SCROLL {step + 1}/{self.max_scrolls}] "
                 f"Videos captured so far: {cur_count}"
             )
-            if cur_count == prev_count and step > 2:
-                # Nothing new for several scrolls – assume we've reached the end
+            if cur_count == prev_count:
                 self._consecutive_no_new += 1
-                if self._consecutive_no_new >= 3:
-                    print("  [INFO] No new videos detected. Stopping scroll.")
+                # Stop only when the API confirms no more content, or after
+                # many consecutive fruitless scrolls (safety net)
+                if self._consecutive_no_new >= EARLY_STOP_NO_MORE and not self._has_more:
+                    print("  [INFO] No new videos and API reports no more content. Stopping scroll.")
+                    break
+                if self._consecutive_no_new >= SAFETY_STOP_CONSECUTIVE:
+                    print("  [INFO] No new videos detected after multiple scrolls. Stopping scroll.")
                     break
             else:
                 self._consecutive_no_new = 0
@@ -344,6 +356,7 @@ class DouyinScraper:
         """
         self._video_items = []
         self._consecutive_no_new = 0
+        self._has_more = True  # assume more content until API says otherwise
 
         with sync_playwright() as pw:
             browser = pw.chromium.launch(headless=self.headless)

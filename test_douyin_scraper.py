@@ -243,6 +243,97 @@ class TestOnResponse:
         scraper._on_response(mock_resp)  # second call – same aweme_id
         assert len(scraper._video_items) == 1
 
+    def test_tracks_has_more_true(self):
+        """_on_response should set _has_more=True when API returns has_more=1."""
+        scraper = ds.DouyinScraper()
+        scraper._has_more = False  # start False; response should flip it True
+        payload = {"aweme_list": [], "has_more": 1}
+        mock_resp = MagicMock()
+        mock_resp.url = "https://www.douyin.com/aweme/v1/web/aweme/post/"
+        mock_resp.json.return_value = payload
+        scraper._on_response(mock_resp)
+        assert scraper._has_more is True
+
+    def test_tracks_has_more_false(self):
+        """_on_response should set _has_more=False when API returns has_more=0."""
+        scraper = ds.DouyinScraper()
+        scraper._has_more = True
+        payload = {"aweme_list": [], "has_more": 0}
+        mock_resp = MagicMock()
+        mock_resp.url = "https://www.douyin.com/aweme/v1/web/aweme/post/"
+        mock_resp.json.return_value = payload
+        scraper._on_response(mock_resp)
+        assert scraper._has_more is False
+
+    def test_has_more_unchanged_when_field_absent(self):
+        """_on_response should not change _has_more when has_more is absent."""
+        scraper = ds.DouyinScraper()
+        scraper._has_more = True
+        payload = {"aweme_list": []}  # no has_more key
+        mock_resp = MagicMock()
+        mock_resp.url = "https://www.douyin.com/aweme/v1/web/aweme/post/"
+        mock_resp.json.return_value = payload
+        scraper._on_response(mock_resp)
+        assert scraper._has_more is True  # unchanged
+
+
+# --------------------------------------------------------------------------- #
+# DouyinScraper._scroll_to_bottom (unit – no real browser)
+# --------------------------------------------------------------------------- #
+
+class TestScrollToBottom:
+    def _make_page(self, item_counts: list[int]):
+        """
+        Return a mock Page whose evaluate() does nothing, and whose
+        response handler will be called with incrementing video counts
+        by directly setting scraper._video_items length.
+        """
+        return MagicMock()
+
+    def test_stops_when_has_more_false_and_no_new_videos(self):
+        """Scroll should stop after EARLY_STOP_NO_MORE fruitless scrolls when has_more is False."""
+        scraper = ds.DouyinScraper(scroll_pause=0)
+        scraper._video_items = []  # start empty so prev_count=0 matches from the start
+        scraper._consecutive_no_new = 0
+        scraper._has_more = False  # API says no more content
+
+        mock_page = MagicMock()
+        scraper._scroll_to_bottom(mock_page)
+
+        # Should have stopped after EARLY_STOP_NO_MORE (3) fruitless scrolls
+        assert mock_page.evaluate.call_count == ds.EARLY_STOP_NO_MORE
+
+    def test_continues_when_has_more_true(self):
+        """When has_more is True, scroll should keep going past EARLY_STOP_NO_MORE
+        and only stop at the safety-net threshold (SAFETY_STOP_CONSECUTIVE).
+        max_scrolls is set higher than SAFETY_STOP_CONSECUTIVE so we hit the
+        safety net before the scroll cap.
+        """
+        scraper = ds.DouyinScraper(scroll_pause=0, max_scrolls=ds.SAFETY_STOP_CONSECUTIVE + 2)
+        scraper._video_items = []  # start empty so prev_count=0 matches from the start
+        scraper._consecutive_no_new = 0
+        scraper._has_more = True  # API says there is more content
+
+        mock_page = MagicMock()
+        scraper._scroll_to_bottom(mock_page)
+
+        # Should have run until the safety net (SAFETY_STOP_CONSECUTIVE = 5)
+        assert mock_page.evaluate.call_count == ds.SAFETY_STOP_CONSECUTIVE
+
+    def test_uses_scroll_to_bottom_js(self):
+        """Scroll should use scrollTo(0, scrollHeight) to reach the page bottom."""
+        scraper = ds.DouyinScraper(scroll_pause=0, max_scrolls=1)
+        scraper._video_items = []
+        scraper._consecutive_no_new = 0
+        scraper._has_more = False
+
+        mock_page = MagicMock()
+        scraper._scroll_to_bottom(mock_page)
+
+        call_js = mock_page.evaluate.call_args[0][0]
+        assert "scrollTo" in call_js
+        assert "scrollHeight" in call_js
+
 
 # --------------------------------------------------------------------------- #
 # _cookies_to_dict
