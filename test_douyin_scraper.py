@@ -133,11 +133,24 @@ class TestDouyinScraperInit:
         assert scraper.output_dir == Path(ds.DEFAULT_OUTPUT_DIR)
         assert scraper.headless is True
         assert scraper.scroll_pause == ds.DEFAULT_SCROLL_PAUSE
+        assert scraper.scroll_pause_jitter == ds.DEFAULT_SCROLL_PAUSE_JITTER
         assert scraper.max_scrolls == ds.DEFAULT_MAX_SCROLLS
+        assert scraper.download_delay_min == ds.DEFAULT_DOWNLOAD_DELAY_MIN
+        assert scraper.download_delay_max == ds.DEFAULT_DOWNLOAD_DELAY_MAX
 
     def test_custom_output_dir(self, tmp_path):
         scraper = ds.DouyinScraper(output_dir=str(tmp_path / "videos"))
         assert scraper.output_dir == tmp_path / "videos"
+
+    def test_custom_jitter_and_delays(self):
+        scraper = ds.DouyinScraper(
+            scroll_pause_jitter=0.5,
+            download_delay_min=2.0,
+            download_delay_max=5.0,
+        )
+        assert scraper.scroll_pause_jitter == 0.5
+        assert scraper.download_delay_min == 2.0
+        assert scraper.download_delay_max == 5.0
 
 
 class TestDownloadAll:
@@ -189,6 +202,41 @@ class TestDownloadAll:
             scraper.download_all(videos)
             _, kwargs = mock_dl.call_args
             assert kwargs.get("cookies") is None
+
+    def test_random_delay_between_downloads(self, tmp_path):
+        """A random delay should be inserted between successive downloads."""
+        scraper = ds.DouyinScraper(
+            output_dir=str(tmp_path),
+            download_delay_min=0.5,
+            download_delay_max=1.5,
+        )
+        videos = [
+            {"aweme_id": "501", "desc": "a", "url": "https://example.com/a.mp4"},
+            {"aweme_id": "502", "desc": "b", "url": "https://example.com/b.mp4"},
+        ]
+        sleep_calls = []
+        with patch.object(ds, "download_video", return_value=True), \
+             patch.object(ds.time, "sleep", side_effect=lambda t: sleep_calls.append(t)):
+            scraper.download_all(videos)
+
+        # Exactly one sleep call between two downloads
+        assert len(sleep_calls) == 1
+        assert 0.5 <= sleep_calls[0] <= 1.5
+
+    def test_no_delay_after_last_download(self, tmp_path):
+        """No delay should be added after the last video is downloaded."""
+        scraper = ds.DouyinScraper(
+            output_dir=str(tmp_path),
+            download_delay_min=1.0,
+            download_delay_max=2.0,
+        )
+        videos = [{"aweme_id": "601", "desc": "only", "url": "https://example.com/c.mp4"}]
+        sleep_calls = []
+        with patch.object(ds, "download_video", return_value=True), \
+             patch.object(ds.time, "sleep", side_effect=lambda t: sleep_calls.append(t)):
+            scraper.download_all(videos)
+
+        assert sleep_calls == []
 
 
 class TestOnResponse:
@@ -292,7 +340,7 @@ class TestScrollToBottom:
 
     def test_stops_when_has_more_false_and_no_new_videos(self):
         """Scroll should stop after EARLY_STOP_NO_MORE fruitless scrolls when has_more is False."""
-        scraper = ds.DouyinScraper(scroll_pause=0)
+        scraper = ds.DouyinScraper(scroll_pause=0, scroll_pause_jitter=0)
         scraper._video_items = []  # start empty so prev_count=0 matches from the start
         scraper._consecutive_no_new = 0
         scraper._has_more = False  # API says no more content
@@ -312,7 +360,7 @@ class TestScrollToBottom:
         max_scrolls is set higher than SAFETY_STOP_CONSECUTIVE so we hit the
         safety net before the scroll cap.
         """
-        scraper = ds.DouyinScraper(scroll_pause=0, max_scrolls=ds.SAFETY_STOP_CONSECUTIVE + 2)
+        scraper = ds.DouyinScraper(scroll_pause=0, scroll_pause_jitter=0, max_scrolls=ds.SAFETY_STOP_CONSECUTIVE + 2)
         scraper._video_items = []  # start empty so prev_count=0 matches from the start
         scraper._consecutive_no_new = 0
         scraper._has_more = True  # API says there is more content
@@ -326,7 +374,7 @@ class TestScrollToBottom:
 
     def test_uses_scroll_by_js(self):
         """Scroll should use scrollBy(0, innerHeight) for incremental scrolling."""
-        scraper = ds.DouyinScraper(scroll_pause=0, max_scrolls=1)
+        scraper = ds.DouyinScraper(scroll_pause=0, scroll_pause_jitter=0, max_scrolls=1)
         scraper._video_items = []
         scraper._consecutive_no_new = 0
         scraper._has_more = False
@@ -339,6 +387,26 @@ class TestScrollToBottom:
         assert "scrollBy" in first_call_js
         assert "innerHeight" in first_call_js
 
+    def test_scroll_pause_includes_jitter(self):
+        """Each scroll step should sleep for scroll_pause + random jitter."""
+        scraper = ds.DouyinScraper(
+            scroll_pause=1.0,
+            scroll_pause_jitter=2.0,
+            max_scrolls=3,
+        )
+        scraper._video_items = []
+        scraper._consecutive_no_new = 0
+        scraper._has_more = False
+
+        sleep_calls = []
+        mock_page = MagicMock()
+        with patch.object(ds.time, "sleep", side_effect=lambda t: sleep_calls.append(t)):
+            scraper._scroll_to_bottom(mock_page)
+
+        # Every sleep call should be in [scroll_pause, scroll_pause + jitter]
+        assert len(sleep_calls) > 0
+        for t in sleep_calls:
+            assert 1.0 <= t <= 3.0  # scroll_pause=1.0, jitter max=2.0
 
 # --------------------------------------------------------------------------- #
 # _cookies_to_dict
