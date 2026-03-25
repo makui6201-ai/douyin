@@ -361,17 +361,19 @@ class TestScrollToBottom:
         assert sleep_calls[0] == 3.5
 
     def test_waits_scroll_pause_after_scroll(self):
-        """_scroll_to_bottom should sleep scroll_pause seconds after scrolling."""
+        """_scroll_to_bottom should sleep scroll_pause + jitter seconds after scrolling."""
         scraper = ds.DouyinScraper(scroll_pause=2.5, scroll_pause_jitter=0)
         scraper._video_items = []
 
         mock_page = MagicMock()
         sleep_calls = []
-        with patch.object(ds.random, "uniform", return_value=1.0), \
+        # First uniform call: pre-scroll delay (1, 5) → 1.0
+        # Second uniform call: jitter (0, scroll_pause_jitter=0) → 0.0
+        with patch.object(ds.random, "uniform", side_effect=[1.0, 0.0]), \
              patch.object(ds.time, "sleep", side_effect=lambda t: sleep_calls.append(t)):
             scraper._scroll_to_bottom(mock_page)
 
-        # Two sleep calls: pre-scroll delay, then scroll_pause
+        # Two sleep calls: pre-scroll delay, then scroll_pause + jitter
         assert len(sleep_calls) == 2
         assert sleep_calls[1] == 2.5
 
@@ -518,4 +520,74 @@ class TestFetchCookies:
 
         assert result == fake_cookies
         assert Path(save_path).exists()
+
+
+# --------------------------------------------------------------------------- #
+# DouyinScraper.fetch_video_list – scroll loop (unit – no real browser)
+# --------------------------------------------------------------------------- #
+
+class TestFetchVideoListScrollLoop:
+    """Tests for the scroll loop inside fetch_video_list."""
+
+    def _make_pw_mock(self):
+        """Return a minimal playwright mock tree for fetch_video_list."""
+        mock_page = MagicMock()
+        mock_context = MagicMock()
+        mock_context.new_page.return_value = mock_page
+        mock_browser = MagicMock()
+        mock_browser.new_context.return_value = mock_context
+        mock_pw = MagicMock()
+        mock_pw.__enter__ = MagicMock(return_value=mock_pw)
+        mock_pw.__exit__ = MagicMock(return_value=False)
+        mock_pw.chromium.launch.return_value = mock_browser
+        return mock_pw, mock_page
+
+    def test_scrolls_up_to_max_scrolls_when_has_more_stays_true(self):
+        """fetch_video_list should scroll exactly max_scrolls times when has_more never becomes False."""
+        scraper = ds.DouyinScraper(max_scrolls=4, scroll_pause=0, scroll_pause_jitter=0)
+        mock_pw, _ = self._make_pw_mock()
+
+        with patch("douyin_scraper.sync_playwright", return_value=mock_pw), \
+             patch.object(scraper, "_scroll_to_bottom") as mock_scroll, \
+             patch.object(ds.time, "sleep"):
+            scraper.fetch_video_list("https://www.douyin.com/user/test")
+
+        assert mock_scroll.call_count == 4
+
+    def test_stops_early_when_has_more_becomes_false(self):
+        """fetch_video_list should stop scrolling as soon as _has_more is False."""
+        scraper = ds.DouyinScraper(max_scrolls=10, scroll_pause=0, scroll_pause_jitter=0)
+        mock_pw, _ = self._make_pw_mock()
+
+        call_count = 0
+
+        def fake_scroll(page):
+            nonlocal call_count
+            call_count += 1
+            if call_count >= 2:
+                scraper._has_more = False
+
+        with patch("douyin_scraper.sync_playwright", return_value=mock_pw), \
+             patch.object(scraper, "_scroll_to_bottom", side_effect=fake_scroll), \
+             patch.object(ds.time, "sleep"):
+            scraper.fetch_video_list("https://www.douyin.com/user/test")
+
+        # Should have stopped after 2 scrolls (has_more set False at scroll 2)
+        assert call_count == 2
+
+    def test_has_more_reset_to_true_at_start(self):
+        """fetch_video_list should reset _has_more=True at the start of each fetch."""
+        scraper = ds.DouyinScraper(max_scrolls=3, scroll_pause=0, scroll_pause_jitter=0)
+        mock_pw, _ = self._make_pw_mock()
+
+        # Pre-set _has_more to False to confirm it gets reset
+        scraper._has_more = False
+
+        with patch("douyin_scraper.sync_playwright", return_value=mock_pw), \
+             patch.object(scraper, "_scroll_to_bottom") as mock_scroll, \
+             patch.object(ds.time, "sleep"):
+            scraper.fetch_video_list("https://www.douyin.com/user/test")
+
+        # Should have scrolled 3 times (not 0) – _has_more was reset to True
+        assert mock_scroll.call_count == 3
 

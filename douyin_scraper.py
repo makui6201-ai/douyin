@@ -34,9 +34,9 @@ _LOGIN_COOKIE_NAMES = {"sessionid", "LOGIN_STATUS"}
 # --------------------------------------------------------------------------- #
 
 DEFAULT_OUTPUT_DIR = "downloads"
-DEFAULT_SCROLL_PAUSE = 3.0        # seconds to wait after the single scroll for API responses
-DEFAULT_SCROLL_PAUSE_JITTER = 2.0 # kept for API compatibility; not used in scroll logic
-DEFAULT_MAX_SCROLLS = 200         # kept for API compatibility; not used in scroll logic
+DEFAULT_SCROLL_PAUSE = 3.0        # seconds to wait after each scroll for API responses
+DEFAULT_SCROLL_PAUSE_JITTER = 2.0 # max extra random seconds added to each scroll pause
+DEFAULT_MAX_SCROLLS = 200         # maximum number of scroll steps before stopping
 DEFAULT_DOWNLOAD_DELAY_MIN = 1.0  # minimum random pause between downloads (seconds)
 DEFAULT_DOWNLOAD_DELAY_MAX = 3.0  # maximum random pause between downloads (seconds)
 
@@ -300,6 +300,7 @@ class DouyinScraper:
         self.download_delay_min = download_delay_min
         self.download_delay_max = download_delay_max
         self._video_items: list[VideoItem] = []
+        self._has_more: bool = True
 
     # ------------------------------------------------------------------ #
     # Internal helpers
@@ -350,15 +351,17 @@ class DouyinScraper:
         """
         Simulate human browsing behaviour: wait a random 1–5 seconds, then
         scroll down by one viewport height to trigger Douyin's lazy-load API
-        call.  After scrolling, pause for ``scroll_pause`` seconds so that the
-        API response arrives before the browser is closed.
+        call.  After scrolling, pause for ``scroll_pause`` seconds (plus a
+        random jitter up to ``scroll_pause_jitter``) so that the API response
+        arrives before the next scroll.
         """
         delay = random.uniform(1, 5)
         print(f"  [INFO] Waiting {delay:.1f}s before scrolling...")
         time.sleep(delay)
         page.evaluate("window.scrollBy(0, window.innerHeight)")
-        print("  [INFO] Scrolled down once. Collecting API data...")
-        time.sleep(self.scroll_pause)
+        print("  [INFO] Scrolled down. Collecting API data...")
+        pause = self.scroll_pause + random.uniform(0, self.scroll_pause_jitter)
+        time.sleep(pause)
 
     # ------------------------------------------------------------------ #
     # Public API
@@ -370,8 +373,13 @@ class DouyinScraper:
         the video list, and return a list of :class:`VideoItem` dicts:
 
             [{"aweme_id": "...", "desc": "...", "url": "..."}, ...]
+
+        Scrolling continues until the API signals that there are no more
+        videos (``has_more == 0``) or until ``max_scrolls`` scroll steps have
+        been performed, whichever comes first.
         """
         self._video_items = []
+        self._has_more = True
 
         with sync_playwright() as pw:
             browser = pw.chromium.launch(headless=self.headless)
@@ -398,7 +406,16 @@ class DouyinScraper:
             except Exception:
                 print("  [WARN] Video list container not found; will still try to scroll.")
 
-            self._scroll_to_bottom(page)
+            for scroll_num in range(1, self.max_scrolls + 1):
+                print(f"  [INFO] Scroll step {scroll_num}/{self.max_scrolls} ...")
+                self._scroll_to_bottom(page)
+                if not self._has_more:
+                    print("  [INFO] API indicates no more videos – stopping scroll.")
+                    break
+            else:
+                # The else block runs only when the loop exhausts all iterations
+                # without hitting the break above (i.e. _has_more never became False).
+                print(f"  [INFO] Reached maximum scroll limit ({self.max_scrolls}).")
 
             browser.close()
 

@@ -75,8 +75,9 @@ python douyin_scraper.py --cookies cookies.json \
 | `url` | 抖音用户主页链接 | 内置示例用户 |
 | `-o / --output-dir` | 视频保存目录 | `downloads` |
 | `--no-headless` | 显示浏览器窗口（便于调试或手动登录） | 关闭 |
-| `--scroll-pause` | 每次滚动后等待秒数 | `2` |
-| `--max-scrolls` | 最大滚动次数（防止死循环） | `50` |
+| `--scroll-pause` | 每次滚动后等待秒数 | `3` |
+| `--scroll-jitter` | 每次滚动后额外随机等待的最大秒数（防止被限速） | `2` |
+| `--max-scrolls` | 最大滚动次数（防止死循环） | `200` |
 | `--cookies` | 包含浏览器 Cookies 的 JSON 文件路径 | 无 |
 | `--save-cookies` | 打开浏览器让用户登录，自动保存 Cookie 到指定文件后退出 | 无 |
 | `--login-timeout` | `--save-cookies` 等待登录的最大秒数 | `120` |
