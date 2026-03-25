@@ -164,6 +164,32 @@ class TestDownloadAll:
             assert call_args[0][0] == "https://example.com/v.mp4"
             assert "222" in str(call_args[0][1])
 
+    def test_passes_cookies_to_download_video(self, tmp_path):
+        """Cookies loaded from file should be forwarded to download_video."""
+        cookies_data = [{"name": "sessionid", "value": "abc123"}]
+        cookies_file = tmp_path / "cookies.json"
+        cookies_file.write_text(json.dumps(cookies_data))
+
+        scraper = ds.DouyinScraper(
+            output_dir=str(tmp_path),
+            cookies_file=str(cookies_file),
+        )
+        videos = [{"aweme_id": "333", "desc": "v", "url": "https://example.com/v.mp4"}]
+        with patch.object(ds, "download_video", return_value=True) as mock_dl:
+            scraper.download_all(videos)
+            mock_dl.assert_called_once()
+            _, kwargs = mock_dl.call_args
+            assert kwargs.get("cookies") == {"sessionid": "abc123"}
+
+    def test_no_cookies_when_no_file(self, tmp_path):
+        """When no cookies_file is set, cookies kwarg should be None."""
+        scraper = ds.DouyinScraper(output_dir=str(tmp_path))
+        videos = [{"aweme_id": "444", "desc": "v", "url": "https://example.com/v.mp4"}]
+        with patch.object(ds, "download_video", return_value=True) as mock_dl:
+            scraper.download_all(videos)
+            _, kwargs = mock_dl.call_args
+            assert kwargs.get("cookies") is None
+
 
 class TestOnResponse:
     def test_captures_post_api_responses(self):
@@ -216,3 +242,116 @@ class TestOnResponse:
         scraper._on_response(mock_resp)
         scraper._on_response(mock_resp)  # second call – same aweme_id
         assert len(scraper._video_items) == 1
+
+
+# --------------------------------------------------------------------------- #
+# _cookies_to_dict
+# --------------------------------------------------------------------------- #
+
+class TestCookiesToDict:
+    def test_converts_list_to_dict(self):
+        cookies = [
+            {"name": "sessionid", "value": "abc"},
+            {"name": "odin_tt", "value": "xyz"},
+        ]
+        result = ds._cookies_to_dict(cookies)
+        assert result == {"sessionid": "abc", "odin_tt": "xyz"}
+
+    def test_empty_list(self):
+        assert ds._cookies_to_dict([]) == {}
+
+
+# --------------------------------------------------------------------------- #
+# DouyinScraper._get_cookies_dict
+# --------------------------------------------------------------------------- #
+
+class TestGetCookiesDict:
+    def test_returns_none_when_no_file(self):
+        scraper = ds.DouyinScraper()
+        assert scraper._get_cookies_dict() is None
+
+    def test_loads_and_converts_cookies(self, tmp_path):
+        cookies_data = [{"name": "sessionid", "value": "tok123"}]
+        cookies_file = tmp_path / "cookies.json"
+        cookies_file.write_text(json.dumps(cookies_data))
+
+        scraper = ds.DouyinScraper(cookies_file=str(cookies_file))
+        result = scraper._get_cookies_dict()
+        assert result == {"sessionid": "tok123"}
+
+    def test_returns_none_on_missing_file(self, tmp_path, capsys):
+        scraper = ds.DouyinScraper(cookies_file=str(tmp_path / "nonexistent.json"))
+        result = scraper._get_cookies_dict()
+        assert result is None
+        assert "WARN" in capsys.readouterr().out
+
+
+# --------------------------------------------------------------------------- #
+# fetch_cookies (unit – no real browser)
+# --------------------------------------------------------------------------- #
+
+class TestFetchCookies:
+    def _make_cookie(self, name: str, value: str) -> dict:
+        return {"name": name, "value": value, "domain": ".douyin.com", "path": "/"}
+
+    def test_saves_cookies_to_file_on_login_detection(self, tmp_path):
+        """fetch_cookies should write cookies.json and return the cookie list."""
+        save_path = str(tmp_path / "out_cookies.json")
+        fake_cookies = [self._make_cookie("odin_tt", "secret")]
+
+        mock_context = MagicMock()
+        # First call to context.cookies() detects login (odin_tt present)
+        mock_context.cookies.return_value = fake_cookies
+
+        mock_browser = MagicMock()
+        mock_browser.new_context.return_value = mock_context
+
+        mock_page = MagicMock()
+        mock_context.new_page.return_value = mock_page
+
+        with patch("douyin_scraper.sync_playwright") as mock_pw_cm:
+            mock_pw = MagicMock()
+            mock_pw.__enter__ = MagicMock(return_value=mock_pw)
+            mock_pw.__exit__ = MagicMock(return_value=False)
+            mock_pw.chromium.launch.return_value = mock_browser
+            mock_pw_cm.return_value = mock_pw
+
+            result = ds.fetch_cookies(save_path=save_path, timeout=10)
+
+        assert result == fake_cookies
+        with open(save_path, "r", encoding="utf-8") as fh:
+            saved = json.load(fh)
+        assert saved == fake_cookies
+
+    def test_saves_cookies_even_when_login_not_detected(self, tmp_path):
+        """fetch_cookies should save cookies even if timeout elapses without login."""
+        save_path = str(tmp_path / "out_cookies.json")
+        # No login cookie names present
+        fake_cookies = [self._make_cookie("anonymous", "anon")]
+
+        mock_context = MagicMock()
+        mock_context.cookies.return_value = fake_cookies
+
+        mock_browser = MagicMock()
+        mock_browser.new_context.return_value = mock_context
+
+        mock_page = MagicMock()
+        mock_context.new_page.return_value = mock_page
+
+        with patch("douyin_scraper.sync_playwright") as mock_pw_cm, \
+             patch("douyin_scraper.time") as mock_time:
+            # Make time.time() exceed the deadline immediately after one iteration
+            mock_time.time.side_effect = [0, 0, 999]  # 999 >> timeout=1, so deadline is exceeded
+            mock_time.sleep = MagicMock()
+
+            mock_pw = MagicMock()
+            mock_pw.__enter__ = MagicMock(return_value=mock_pw)
+            mock_pw.__exit__ = MagicMock(return_value=False)
+            mock_pw.chromium.launch.return_value = mock_browser
+            mock_pw_cm.return_value = mock_pw
+
+            result = ds.fetch_cookies(save_path=save_path, timeout=1)
+
+        assert result == fake_cookies
+        assert Path(save_path).exists()
+
