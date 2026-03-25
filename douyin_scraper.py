@@ -34,15 +34,12 @@ _LOGIN_COOKIE_NAMES = {"sessionid", "LOGIN_STATUS"}
 # --------------------------------------------------------------------------- #
 
 DEFAULT_OUTPUT_DIR = "downloads"
-DEFAULT_SCROLL_PAUSE = 3.0        # seconds between scroll steps
-DEFAULT_SCROLL_PAUSE_JITTER = 2.0 # max additional random seconds added to each scroll pause
-DEFAULT_MAX_SCROLLS = 200         # upper bound to avoid infinite loops (raised for large accounts)
+DEFAULT_SCROLL_PAUSE = 3.0        # seconds to wait after the single scroll for API responses
+DEFAULT_SCROLL_PAUSE_JITTER = 2.0 # kept for API compatibility; not used in scroll logic
+DEFAULT_MAX_SCROLLS = 200         # kept for API compatibility; not used in scroll logic
 DEFAULT_DOWNLOAD_DELAY_MIN = 1.0  # minimum random pause between downloads (seconds)
 DEFAULT_DOWNLOAD_DELAY_MAX = 3.0  # maximum random pause between downloads (seconds)
-# Consecutive fruitless scrolls needed to stop when API says no more content
-EARLY_STOP_NO_MORE = 3
-# Consecutive fruitless scrolls needed to stop regardless of has_more (safety net)
-SAFETY_STOP_CONSECUTIVE = 10
+
 class VideoItem(TypedDict):
     """A single video item returned by the scraper."""
     aweme_id: str
@@ -351,64 +348,17 @@ class DouyinScraper:
 
     def _scroll_to_bottom(self, page: Page) -> None:
         """
-        Scroll down the page repeatedly until no new content loads or
-        *max_scrolls* is reached.
-
-        Uses incremental scrolling (one viewport height at a time) so that
-        Douyin's IntersectionObserver-based load-more sentinel actually passes
-        through the viewport and triggers the next API call.
-
-        When stuck, progressive recovery strategies are applied:
-        - Level 1 (any consecutive miss): scroll to the absolute page bottom so
-          the lazy-load sentinel is guaranteed to enter the viewport.
-        - Level 2 (3+ consecutive misses): scroll back up two viewport heights
-          and then return to the bottom, forcing the IntersectionObserver to
-          fire again as the sentinel re-enters the viewport.
-
-        A random jitter is added to every pause to simulate human scrolling
-        speed and reduce the chance of anti-bot detection.
+        Simulate human browsing behaviour: wait a random 1–5 seconds, then
+        scroll down by one viewport height to trigger Douyin's lazy-load API
+        call.  After scrolling, pause for ``scroll_pause`` seconds so that the
+        API response arrives before the browser is closed.
         """
-        prev_count = 0
-        for step in range(self.max_scrolls):
-            # Primary scroll: advance one viewport height
-            page.evaluate("window.scrollBy(0, window.innerHeight)")
-
-            # Level-1 recovery: scroll to absolute page bottom so the sentinel
-            # is guaranteed to enter the viewport
-            if self._consecutive_no_new > 0:
-                page.evaluate(
-                    "window.scrollTo(0, document.body.scrollHeight"
-                    " || document.documentElement.scrollHeight);"
-                )
-
-            # Level-2 recovery: scroll up and back down to re-trigger the
-            # IntersectionObserver on the load-more sentinel
-            if self._consecutive_no_new >= 3:
-                page.evaluate("window.scrollBy(0, -window.innerHeight * 2);")
-                page.evaluate(
-                    "window.scrollTo(0, document.body.scrollHeight"
-                    " || document.documentElement.scrollHeight);"
-                )
-
-            time.sleep(self.scroll_pause + random.uniform(0, self.scroll_pause_jitter))
-            cur_count = len(self._video_items)
-            print(
-                f"  [SCROLL {step + 1}/{self.max_scrolls}] "
-                f"Videos captured so far: {cur_count}"
-            )
-            if cur_count == prev_count:
-                self._consecutive_no_new += 1
-                # Stop only when the API confirms no more content, or after
-                # many consecutive fruitless scrolls (safety net)
-                if self._consecutive_no_new >= EARLY_STOP_NO_MORE and not self._has_more:
-                    print("  [INFO] No new videos and API reports no more content. Stopping scroll.")
-                    break
-                if self._consecutive_no_new >= SAFETY_STOP_CONSECUTIVE:
-                    print("  [INFO] No new videos detected after multiple scrolls. Stopping scroll.")
-                    break
-            else:
-                self._consecutive_no_new = 0
-            prev_count = cur_count
+        delay = random.uniform(1, 5)
+        print(f"  [INFO] Waiting {delay:.1f}s before scrolling...")
+        time.sleep(delay)
+        page.evaluate("window.scrollBy(0, window.innerHeight)")
+        print("  [INFO] Scrolled down once. Collecting API data...")
+        time.sleep(self.scroll_pause)
 
     # ------------------------------------------------------------------ #
     # Public API
@@ -422,8 +372,6 @@ class DouyinScraper:
             [{"aweme_id": "...", "desc": "...", "url": "..."}, ...]
         """
         self._video_items = []
-        self._consecutive_no_new = 0
-        self._has_more = True  # assume more content until API says otherwise
 
         with sync_playwright() as pw:
             browser = pw.chromium.launch(headless=self.headless)
@@ -450,7 +398,6 @@ class DouyinScraper:
             except Exception:
                 print("  [WARN] Video list container not found; will still try to scroll.")
 
-            time.sleep(3)  # let initial API responses settle
             self._scroll_to_bottom(page)
 
             browser.close()

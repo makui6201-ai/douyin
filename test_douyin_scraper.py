@@ -330,126 +330,51 @@ class TestOnResponse:
 # --------------------------------------------------------------------------- #
 
 class TestScrollToBottom:
-    def _make_page(self, item_counts: list[int]):
-        """
-        Return a mock Page whose evaluate() does nothing, and whose
-        response handler will be called with incrementing video counts
-        by directly setting scraper._video_items length.
-        """
-        return MagicMock()
-
-    def test_stops_when_has_more_false_and_no_new_videos(self):
-        """Scroll should stop after EARLY_STOP_NO_MORE fruitless scrolls when has_more is False."""
+    def test_scrolls_down_exactly_once(self):
+        """_scroll_to_bottom should issue exactly one scrollBy call."""
         scraper = ds.DouyinScraper(scroll_pause=0, scroll_pause_jitter=0)
-        scraper._video_items = []  # start empty so prev_count=0 matches from the start
-        scraper._consecutive_no_new = 0
-        scraper._has_more = False  # API says no more content
-
-        mock_page = MagicMock()
-        scraper._scroll_to_bottom(mock_page)
-
-        # Scroll 1 emits 1 evaluate (primary scrollBy; consecutive_no_new=0 so
-        # no recovery).
-        # Scrolls 2..EARLY_STOP_NO_MORE each emit 2 evaluates (scrollBy +
-        # level-1 scrollTo-bottom; consecutive_no_new is 1 or 2, below the 3
-        # threshold for level-2 recovery).
-        expected = 1 + 2 * (ds.EARLY_STOP_NO_MORE - 1)
-        assert mock_page.evaluate.call_count == expected
-
-    def test_continues_when_has_more_true(self):
-        """When has_more is True, scroll should keep going past EARLY_STOP_NO_MORE
-        and only stop at the safety-net threshold (SAFETY_STOP_CONSECUTIVE).
-        max_scrolls is set higher than SAFETY_STOP_CONSECUTIVE so we hit the
-        safety net before the scroll cap.
-        """
-        scraper = ds.DouyinScraper(scroll_pause=0, scroll_pause_jitter=0, max_scrolls=ds.SAFETY_STOP_CONSECUTIVE + 2)
-        scraper._video_items = []  # start empty so prev_count=0 matches from the start
-        scraper._consecutive_no_new = 0
-        scraper._has_more = True  # API says there is more content
-
-        mock_page = MagicMock()
-        scraper._scroll_to_bottom(mock_page)
-
-        # Evaluate call count depends on which recovery level is active:
-        #   consecutive_no_new=0 (scroll 1):  1 eval  (primary scrollBy only)
-        #   consecutive_no_new=1,2 (scrolls 2-3): 2 evals each (+ level-1 scrollTo-bottom)
-        #   consecutive_no_new>=3 (scrolls 4..SAFETY_STOP_CONSECUTIVE):
-        #       4 evals each (+ level-1 scrollTo, + level-2 scrollBy-up + scrollTo)
-        n = ds.SAFETY_STOP_CONSECUTIVE
-        expected = 1 + 2 * 2 + 4 * (n - 3)
-        assert mock_page.evaluate.call_count == expected
-
-    def test_level1_recovery_scrolls_to_page_bottom(self):
-        """Level-1 recovery (consecutive_no_new >= 1) should call scrollTo the page bottom."""
-        scraper = ds.DouyinScraper(scroll_pause=0, scroll_pause_jitter=0, max_scrolls=2)
         scraper._video_items = []
-        scraper._consecutive_no_new = 0
-        scraper._has_more = False
 
         mock_page = MagicMock()
-        scraper._scroll_to_bottom(mock_page)
-
-        # Scroll 2 (step=1) triggers level-1 recovery; check that the exact JS
-        # for scrolling to the document bottom was issued
-        all_js = [call[0][0] for call in mock_page.evaluate.call_args_list]
-        bottom_scroll_calls = [
-            js for js in all_js if "window.scrollTo(0, document.body.scrollHeight" in js
-        ]
-        assert len(bottom_scroll_calls) >= 1, "Expected at least one scrollTo(page bottom) call"
-
-    def test_level2_recovery_scrolls_up_then_down(self):
-        """Level-2 recovery (consecutive_no_new >= 3) should scroll up then back to bottom."""
-        # Set consecutive_no_new to 3 upfront so level-2 fires on the very first iteration
-        scraper = ds.DouyinScraper(scroll_pause=0, scroll_pause_jitter=0, max_scrolls=1)
-        scraper._video_items = []
-        scraper._consecutive_no_new = 3  # already at level-2 threshold
-        scraper._has_more = False
-
-        mock_page = MagicMock()
-        scraper._scroll_to_bottom(mock_page)
-
-        all_js = [call[0][0] for call in mock_page.evaluate.call_args_list]
-        # Level-2: a scrollBy with a *negative* offset (scroll up by 2 viewport heights)
-        up_scroll_calls = [
-            js for js in all_js if "scrollBy(0, -window.innerHeight * 2)" in js
-        ]
-        assert len(up_scroll_calls) >= 1, "Expected at least one upward scrollBy call"
-
-    def test_uses_scroll_by_js(self):
-        """Scroll should use scrollBy(0, innerHeight) for incremental scrolling."""
-        scraper = ds.DouyinScraper(scroll_pause=0, scroll_pause_jitter=0, max_scrolls=1)
-        scraper._video_items = []
-        scraper._consecutive_no_new = 0
-        scraper._has_more = False
-
-        mock_page = MagicMock()
-        scraper._scroll_to_bottom(mock_page)
-
-        # First (and only) call is always the primary scrollBy call
-        first_call_js = mock_page.evaluate.call_args_list[0][0][0]
-        assert "scrollBy" in first_call_js
-        assert "innerHeight" in first_call_js
-
-    def test_scroll_pause_includes_jitter(self):
-        """Each scroll step should sleep for scroll_pause + random jitter."""
-        scraper = ds.DouyinScraper(
-            scroll_pause=1.0,
-            scroll_pause_jitter=2.0,
-            max_scrolls=3,
-        )
-        scraper._video_items = []
-        scraper._consecutive_no_new = 0
-        scraper._has_more = False
-
-        sleep_calls = []
-        mock_page = MagicMock()
-        with patch.object(ds.time, "sleep", side_effect=lambda t: sleep_calls.append(t)):
+        with patch.object(ds.random, "uniform", return_value=2.0), \
+             patch.object(ds.time, "sleep"):
             scraper._scroll_to_bottom(mock_page)
 
-        # Every sleep call should be in [scroll_pause, scroll_pause + jitter]
-        assert len(sleep_calls) > 0
-        for t in sleep_calls:
-            assert 1.0 <= t <= 3.0  # scroll_pause=1.0, jitter max=2.0
+        assert mock_page.evaluate.call_count == 1
+        js = mock_page.evaluate.call_args[0][0]
+        assert "scrollBy(0, window.innerHeight)" in js
+
+    def test_waits_between_1_and_5_seconds_before_scroll(self):
+        """_scroll_to_bottom should sleep a random amount in [1, 5] before scrolling."""
+        scraper = ds.DouyinScraper(scroll_pause=0, scroll_pause_jitter=0)
+        scraper._video_items = []
+
+        mock_page = MagicMock()
+        sleep_calls = []
+        with patch.object(ds.random, "uniform", return_value=3.5) as mock_uniform, \
+             patch.object(ds.time, "sleep", side_effect=lambda t: sleep_calls.append(t)):
+            scraper._scroll_to_bottom(mock_page)
+
+        # random.uniform should have been called with (1, 5)
+        mock_uniform.assert_any_call(1, 5)
+        # The first sleep should be the pre-scroll delay (3.5 as returned by mock)
+        assert sleep_calls[0] == 3.5
+
+    def test_waits_scroll_pause_after_scroll(self):
+        """_scroll_to_bottom should sleep scroll_pause seconds after scrolling."""
+        scraper = ds.DouyinScraper(scroll_pause=2.5, scroll_pause_jitter=0)
+        scraper._video_items = []
+
+        mock_page = MagicMock()
+        sleep_calls = []
+        with patch.object(ds.random, "uniform", return_value=1.0), \
+             patch.object(ds.time, "sleep", side_effect=lambda t: sleep_calls.append(t)):
+            scraper._scroll_to_bottom(mock_page)
+
+        # Two sleep calls: pre-scroll delay, then scroll_pause
+        assert len(sleep_calls) == 2
+        assert sleep_calls[1] == 2.5
+
 
 # --------------------------------------------------------------------------- #
 # _cookies_to_dict
